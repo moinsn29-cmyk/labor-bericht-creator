@@ -1,4 +1,4 @@
-"""Tkinter-free report generation core for the Laborbericht app.
+r"""Tkinter-free report generation core for the Laborbericht app.
 
 A report lives in its own folder:
 
@@ -22,6 +22,7 @@ import sys
 import json
 import time
 import shutil
+import tempfile
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -31,11 +32,10 @@ from typing import Dict, List, Optional, Tuple
 def _add_local_dependencies() -> None:
     """Put the bundled libraries first: LibreOffice's Python has no python-docx, pypdf or Pillow."""
     here = Path(__file__).resolve().parent
-    candidates = [
-        Path(os.environ.get("LOCALAPPDATA", "")) / "laborbericht-mcp" / "libs",
-        here / "_libs",
-        here / "libs",
-    ]
+    candidates = [here / "_libs", here / "libs"]
+    if os.environ.get("LOCALAPPDATA"):
+        # Without the variable the path would be relative and pick up a folder in the current directory.
+        candidates.insert(0, Path(os.environ["LOCALAPPDATA"]) / "laborbericht-mcp" / "libs")
     for path in candidates:
         if path.exists():
             sys.path.insert(0, str(path))
@@ -72,22 +72,26 @@ def documents_folder() -> str:
     """The user's Documents folder, also when Windows redirects it to OneDrive."""
     try:
         import winreg
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                             r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders")
-        value, _ = winreg.QueryValueEx(key, "Personal")
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as key:
+            value, _ = winreg.QueryValueEx(key, "Personal")
         return os.path.expandvars(value)
-    except OSError:
+    except (ImportError, OSError):
         return str(Path.home() / "Documents")
+
+
 IMAGE_PATTERNS = ("*.png", "*.jpg", "*.jpeg")
 
 
 def _images(folder: Path) -> List[Path]:
     return sorted({p for pattern in IMAGE_PATTERNS for p in folder.glob(pattern)})
 
+
 CONTENT_FILE = "content.json"
 SCREENSHOT_DIR = "screenshots"
 WORK_DIR = "work"
 FINAL_DIR = "final"
+BUILD_PDF = "_build.pdf"
 
 # Style names that actually exist in Vorlage_Laborbericht_PG_V2.docx.
 STYLE_HEADING_1 = "Heading 1"
@@ -165,7 +169,7 @@ def list_assets(folder: str, run_ocr: bool = False) -> Dict:
     content_path = folder_path / WORK_DIR / CONTENT_FILE
     return {
         "folder": str(folder_path),
-        "pdfs": sorted(str(p) for p in (folder_path / WORK_DIR).glob("*.pdf")),
+        "pdfs": sorted(str(p) for p in (folder_path / WORK_DIR).glob("*.pdf") if p.name != BUILD_PDF),
         "content": str(content_path) if content_path.is_file() else None,
         "screenshots": ocr_screenshots(str(folder_path), run_ocr=run_ocr),
     }
@@ -277,9 +281,10 @@ def heading_times(content: Dict) -> Dict[int, str]:
     return times
 
 
-def heading_display(content: Dict, index: int) -> str:
+def heading_display(content: Dict, index: int, times: Optional[Dict[int, str]] = None) -> str:
+    """Heading text as printed. Pass ``times`` (from ``heading_times``) when calling this in a loop."""
     block = content["blocks"][index]
-    clock = heading_times(content).get(index)
+    clock = (heading_times(content) if times is None else times).get(index)
     return f"{block['text']} ({clock} Uhr)" if clock else block["text"]
 
 
@@ -387,6 +392,10 @@ def _replace_in_all_paragraphs(document: Document, replacements: Dict[str, str])
                           section.first_page_header, section.first_page_footer,
                           section.even_page_header, section.even_page_footer):
             try:
+                # A header or footer the template does not define is inherited; merely reading
+                # its paragraphs would make python-docx add an empty one to the document.
+                if container.is_linked_to_previous:
+                    continue
                 for paragraph in container.paragraphs:
                     _replace_text_in_paragraph(paragraph, replacements)
             except Exception:
@@ -454,6 +463,8 @@ def _take_template_tail(document: Document) -> List:
     table_index = _find_index_paragraph(document, "Tabelle")
     if table_index is None:
         raise RuntimeError("Vorlage geändert: Tabellenverzeichnis nicht gefunden")
+    if table_index._p not in children:
+        raise RuntimeError("Vorlage geändert: Tabellenverzeichnis steht nicht direkt im Dokumenttext")
     index_position = children.index(table_index._p)
 
     def heading_text(element) -> Optional[str]:
@@ -599,24 +610,41 @@ def _picture_size_cm(width_px: int, height_px: int, max_width_cm: float,
     return round(width_cm, 2)
 
 
-def _add_picture(document: Document, image_path: Path, crop: Optional[List[int]],
-                 max_width_cm: float, max_height_cm: float):
+PNG_MODES = ("1", "L", "LA", "I", "I;16", "P", "RGB", "RGBA")
+
+
+def _picture_png(image_path: Path, crop: Optional[List[int]]) -> Tuple[bytes, int, int]:
+    """The (cropped) screenshot as PNG bytes with its pixel size."""
     with Image.open(image_path) as image:
         if crop:
             left, top, right, bottom = crop
             if not (0 <= left < right <= image.width and 0 <= top < bottom <= image.height):
                 raise ValueError(f"crop {crop} liegt außerhalb von {image_path.name} {image.size}")
             image = image.crop((left, top, right, bottom))
+        if image.mode not in PNG_MODES:  # e.g. a CMYK JPEG
+            image = image.convert("RGB")
         width_px, height_px = image.size
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
-    buffer.seek(0)
+    return buffer.getvalue(), width_px, height_px
+
+
+def _add_picture(document: Document, image_path: Path, crop: Optional[List[int]],
+                 max_width_cm: float, max_height_cm: float, cache: Optional[Dict] = None):
+    """Insert a screenshot. ``cache`` saves re-encoding the same image in every layout pass."""
+    key = (str(image_path), tuple(crop or ()))
+    if cache is not None and key in cache:
+        data, width_px, height_px = cache[key]
+    else:
+        data, width_px, height_px = _picture_png(image_path, crop)
+        if cache is not None:
+            cache[key] = (data, width_px, height_px)
 
     paragraph = document.add_paragraph()
     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
     paragraph.paragraph_format.keep_with_next = True
     paragraph.add_run().add_picture(
-        buffer, width=Cm(_picture_size_cm(width_px, height_px, max_width_cm, max_height_cm)))
+        io.BytesIO(data), width=Cm(_picture_size_cm(width_px, height_px, max_width_cm, max_height_cm)))
     return paragraph
 
 
@@ -667,7 +695,9 @@ def _set_table_borders(table) -> None:
         element.set(qn("w:space"), "0")
         element.set(qn("w:color"), "000000")
         borders.append(element)
-    tbl_pr.append(borders)
+    # Word expects the children of w:tblPr in schema order.
+    tbl_pr.insert_element_before(borders, "w:shd", "w:tblLayout", "w:tblCellMar", "w:tblLook",
+                                 "w:tblCaption", "w:tblDescription", "w:tblPrChange")
 
 
 def _keep_table_together(table) -> None:
@@ -761,17 +791,17 @@ def _compact_toc_styles(document: Document) -> None:
         for existing in ppr.findall(qn("w:tabs")):
             ppr.remove(existing)
 
-        tabs = OxmlElement("w:tabs")
         tab = OxmlElement("w:tab")
         tab.set(qn("w:val"), "right")
         tab.set(qn("w:leader"), "dot")
         tab.set(qn("w:pos"), str(right_pos))
-        tabs.append(tab)
-        ppr.append(tabs)
+        # get_or_add_tabs() puts w:tabs where the schema wants it (before w:spacing).
+        ppr.get_or_add_tabs().append(tab)
 
 
 def _build_document(template_path: str, content: Dict, screenshots: Path,
-                    page_numbers: Optional[Dict[str, int]] = None) -> Document:
+                    page_numbers: Optional[Dict[str, int]] = None,
+                    image_cache: Optional[Dict] = None) -> Document:
     """Build the report from the template and ``content``.
 
     ``page_numbers`` maps an index entry text to the page it was measured on during a previous
@@ -799,6 +829,7 @@ def _build_document(template_path: str, content: Dict, screenshots: Path,
     text_width_cm = (section.page_width - section.left_margin - section.right_margin) / 360000
 
     blocks = content["blocks"]
+    times = heading_times(content)
     figure_iter = iter(figures)
     table_iter = iter(tables)
     for index, block in enumerate(blocks):
@@ -806,7 +837,7 @@ def _build_document(template_path: str, content: Dict, screenshots: Path,
         next_kind = blocks[index + 1].get("type") if index + 1 < len(blocks) else None
 
         if kind == "heading":
-            _add_heading(document, heading_display(content, index), block["level"])
+            _add_heading(document, heading_display(content, index, times), block["level"])
         elif kind == "text":
             paragraph = document.add_paragraph(_resolve_refs(block["text"], figure_numbers))
             if next_kind in ("code", "bullets", "table"):
@@ -818,7 +849,8 @@ def _build_document(template_path: str, content: Dict, screenshots: Path,
         elif kind == "figure":
             figure = next(figure_iter)
             _add_picture(document, screenshots / figure["file"], block.get("crop"),
-                         text_width_cm, block.get("max_height_cm", DEFAULT_MAX_IMAGE_HEIGHT_CM))
+                         text_width_cm, block.get("max_height_cm", DEFAULT_MAX_IMAGE_HEIGHT_CM),
+                         image_cache)
             _add_caption(document, "Abbildung", figure["number"], figure["caption"],
                          STYLE_CAPTION_FIGURE)
         elif kind == "table":
@@ -851,8 +883,12 @@ def _normalise(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def _page_texts(reader: PdfReader) -> List[str]:
+    return [_normalise(page.extract_text() or "") for page in reader.pages]
+
+
 def _pdf_page_texts(pdf_path: str) -> List[str]:
-    return [_normalise(page.extract_text() or "") for page in PdfReader(str(pdf_path)).pages]
+    return _page_texts(PdfReader(str(pdf_path)))
 
 
 def _index_page_set(page_texts: List[str]) -> set:
@@ -860,26 +896,29 @@ def _index_page_set(page_texts: List[str]) -> set:
             if "Abbildungsverzeichnis" in text or "Tabellenverzeichnis" in text}
 
 
-def _measure_index_pages(pdf_path: str, entry_texts: List[str]) -> Dict[str, int]:
-    """Find the page each caption appears on in the rendered PDF, ignoring the index pages."""
-    page_texts = _pdf_page_texts(pdf_path)
+def _measure_index_pages(page_texts: List[str], entry_texts: List[str]) -> Dict[str, int]:
+    """Find the page each caption appears on in the rendered PDF, ignoring the index pages.
+
+    The caption is the last hit: an index long enough to run over onto a page without its
+    heading comes before the body and must not be mistaken for the caption.
+    """
     index_pages = _index_page_set(page_texts)
 
     pages: Dict[str, int] = {}
     for text in entry_texts:
         needle = _normalise(text)
-        for page_number, haystack in enumerate(page_texts, 1):
-            if page_number not in index_pages and needle in haystack:
+        for page_number in range(len(page_texts), 0, -1):
+            if page_number not in index_pages and needle in page_texts[page_number - 1]:
                 pages[text] = page_number
                 break
     return pages
 
 
-def _count_pdf_images(pdf_path: str) -> int:
+def _count_pdf_images(reader: PdfReader) -> int:
     """Count distinct image objects placed on the pages of the PDF."""
     seen = set()
     anonymous = 0
-    for page in PdfReader(str(pdf_path)).pages:
+    for page in reader.pages:
         resources = page.get("/Resources")
         xobjects = resources.get_object().get("/XObject") if resources is not None else None
         if xobjects is None:
@@ -896,7 +935,7 @@ def _count_pdf_images(pdf_path: str) -> int:
     return len(seen) + anonymous
 
 
-def _measure_page_fill(pdf_path: str) -> List[Dict]:
+def _measure_page_fill(reader: PdfReader) -> List[Dict]:
     """Measure how much of each page's height is used by text and images.
 
     ``fill`` is the vertical extent of the content as a fraction of the body area.  The footer
@@ -904,7 +943,7 @@ def _measure_page_fill(pdf_path: str) -> List[Dict]:
     11 % of the page height is ignored; otherwise every page would look full.
     """
     results: List[Dict] = []
-    for page_no, page in enumerate(PdfReader(str(pdf_path)).pages, 1):
+    for page_no, page in enumerate(reader.pages, 1):
         page_height = float(page.mediabox.height or 842)
         low, high = page_height * 0.11, page_height * 0.92
         ys: List[float] = []
@@ -936,6 +975,130 @@ def _measure_page_fill(pdf_path: str) -> List[Dict]:
 # LibreOffice export
 # ---------------------------------------------------------------------------
 
+class _UnoSession:
+    """A headless soffice with a UNO socket, started on first use and reused until ``close()``.
+
+    Starting LibreOffice takes far longer than exporting a document, so one build keeps a
+    single instance for all of its layout passes.
+    """
+
+    PORT = 2002
+
+    def __init__(self, timeout: float = 90.0) -> None:
+        self.timeout = timeout
+        self._process = None
+        self._desktop = None
+        self._uno = None
+        self._property_value = None
+
+    def _connect(self) -> Tuple[bool, str]:
+        if self._desktop is not None:
+            return True, ""
+        try:
+            import uno
+            from com.sun.star.beans import PropertyValue
+        except Exception as exc:
+            return False, f"UNO nicht verfügbar: {exc}"
+        if not SOFFICE.exists():
+            return False, f"LibreOffice nicht gefunden: {SOFFICE}"
+
+        profile = Path(os.environ.get("TEMP") or tempfile.gettempdir()).absolute() / "loprofile_indexrefresh"
+        profile.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            str(SOFFICE),
+            f"-env:UserInstallation={profile.as_uri()}",
+            "--headless", "--norestore", "--nologo", "--nodefault", "--nofirststartwizard",
+            f"--accept=socket,host=localhost,port={self.PORT};urp;StarOffice.ComponentContext",
+        ]
+        self._process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        try:
+            local_ctx = uno.getComponentContext()
+            resolver = local_ctx.ServiceManager.createInstanceWithContext(
+                "com.sun.star.bridge.UnoUrlResolver", local_ctx)
+        except Exception as exc:
+            self.close()
+            return False, f"UNO nicht verfügbar: {exc}"
+
+        ctx = None
+        deadline = time.time() + self.timeout
+        while time.time() < deadline:
+            try:
+                ctx = resolver.resolve(
+                    f"uno:socket,host=localhost,port={self.PORT};urp;StarOffice.ComponentContext")
+                break
+            except Exception:
+                time.sleep(0.25)
+
+        if ctx is None:
+            self._process.terminate()
+            self._process = None
+            return False, "Keine Verbindung zum UNO-Bridge (Zeitlimit erreicht)"
+
+        self._desktop = ctx.ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
+        self._uno = uno
+        self._property_value = PropertyValue
+        return True, ""
+
+    def export(self, docx_path: str, pdf_path: str) -> Tuple[bool, str]:
+        connected, message = self._connect()
+        if not connected:
+            return False, message
+
+        def prop(name: str, value):
+            item = self._property_value()
+            item.Name = name
+            item.Value = value
+            return item
+
+        uno = self._uno
+        document = None
+        try:
+            document = self._desktop.loadComponentFromURL(
+                uno.systemPathToFileUrl(str(Path(docx_path).resolve())), "_blank", 0, (prop("Hidden", True),))
+
+            try:
+                document.getTextFields().refresh()
+            except Exception:
+                pass
+
+            indexes = document.getDocumentIndexes()
+            for i in range(indexes.getCount()):
+                indexes.getByIndex(i).update()
+
+            try:
+                document.refresh()
+            except Exception:
+                pass
+
+            document.storeToURL(
+                uno.systemPathToFileUrl(str(Path(pdf_path).resolve())),
+                (prop("FilterName", "writer_pdf_Export"),))
+            return True, f"{indexes.getCount()} Verzeichnisse aktualisiert, PDF exportiert"
+        except Exception as exc:
+            return False, f"UNO-Export fehlgeschlagen: {type(exc).__name__}: {exc}"
+        finally:
+            if document is not None:
+                try:
+                    document.close(True)
+                except Exception:
+                    pass
+
+    def close(self) -> None:
+        desktop, process = self._desktop, self._process
+        self._desktop = self._process = None
+        if desktop is not None:
+            try:
+                desktop.terminate()
+            except Exception:
+                pass
+        if process is not None:
+            try:
+                process.wait(timeout=20)
+            except Exception:
+                process.terminate()
+
+
 def export_pdf_with_uno(docx_path: str, pdf_path: str, timeout: float = 90.0) -> Tuple[bool, str]:
     """Refresh all indexes and export the PDF via the LibreOffice UNO bridge.
 
@@ -947,96 +1110,11 @@ def export_pdf_with_uno(docx_path: str, pdf_path: str, timeout: float = 90.0) ->
     template's custom styles (``Abbildung (user)`` and friends), which would break the
     verification step and any later editing in Word.
     """
+    session = _UnoSession(timeout)
     try:
-        import uno  # noqa: F401
-        from com.sun.star.beans import PropertyValue  # noqa: F401
-    except Exception as exc:
-        return False, f"UNO nicht verfügbar: {exc}"
-
-    docx_path = str(Path(docx_path).resolve())
-    pdf_path = str(Path(pdf_path).resolve())
-    port = 2002
-    profile = Path(os.environ.get("TEMP", ".")) / "loprofile_indexrefresh"
-    profile.mkdir(parents=True, exist_ok=True)
-
-    if not SOFFICE.exists():
-        return False, f"LibreOffice nicht gefunden: {SOFFICE}"
-
-    cmd = [
-        str(SOFFICE),
-        f"-env:UserInstallation=file:///{profile.as_posix()}",
-        "--headless", "--norestore", "--nologo", "--nodefault", "--nofirststartwizard",
-        f"--accept=socket,host=localhost,port={port};urp;StarOffice.ComponentContext",
-    ]
-    process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    local_ctx = uno.getComponentContext()
-    resolver = local_ctx.ServiceManager.createInstanceWithContext(
-        "com.sun.star.bridge.UnoUrlResolver", local_ctx)
-
-    ctx = None
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            ctx = resolver.resolve(
-                f"uno:socket,host=localhost,port={port};urp;StarOffice.ComponentContext")
-            break
-        except Exception:
-            time.sleep(1.0)
-
-    if ctx is None:
-        process.terminate()
-        return False, "Keine Verbindung zum UNO-Bridge (Zeitlimit erreicht)"
-
-    desktop = ctx.ServiceManager.createInstanceWithContext(
-        "com.sun.star.frame.Desktop", ctx)
-
-    def prop(name: str, value) -> "PropertyValue":
-        item = PropertyValue()
-        item.Name = name
-        item.Value = value
-        return item
-
-    document = None
-    try:
-        url = uno.systemPathToFileUrl(docx_path)
-        document = desktop.loadComponentFromURL(
-            url, "_blank", 0, (prop("Hidden", True),))
-
-        try:
-            document.getTextFields().refresh()
-        except Exception:
-            pass
-
-        indexes = document.getDocumentIndexes()
-        for i in range(indexes.getCount()):
-            indexes.getByIndex(i).update()
-
-        try:
-            document.refresh()
-        except Exception:
-            pass
-
-        document.storeToURL(
-            uno.systemPathToFileUrl(pdf_path),
-            (prop("FilterName", "writer_pdf_Export"),))
-        return True, f"{indexes.getCount()} Verzeichnisse aktualisiert, PDF exportiert"
-    except Exception as exc:
-        return False, f"UNO-Export fehlgeschlagen: {type(exc).__name__}: {exc}"
+        return session.export(docx_path, pdf_path)
     finally:
-        if document is not None:
-            try:
-                document.close(True)
-            except Exception:
-                pass
-        try:
-            desktop.terminate()
-        except Exception:
-            pass
-        try:
-            process.wait(timeout=20)
-        except Exception:
-            process.terminate()
+        session.close()
 
 
 def export_with_libreoffice(input_path: str, output_dir: str, target_format: str = "pdf") -> Tuple[bool, str]:
@@ -1067,18 +1145,21 @@ FORBIDDEN_TOKENS = [
 ]
 
 
-def _verify_index_pages(pdf_path: str, entry_texts: List[str],
+def _verify_index_pages(page_texts: List[str], entry_texts: List[str],
                         index_entries: Dict[str, int]) -> Dict:
     """Every expected index entry needs a page number, and it must be the caption's real page."""
-    actual_pages = _measure_index_pages(pdf_path, entry_texts)
+    actual_pages = _measure_index_pages(page_texts, entry_texts)
     missing = [text for text in entry_texts if index_entries.get(text) is None]
     mismatches = [{"entry": text, "claimed": index_entries.get(text), "actual": actual_pages.get(text)}
                   for text in entry_texts
                   if index_entries.get(text) is not None and index_entries[text] != actual_pages.get(text)]
 
-    # The printed index line must carry the number as well: "<entry> ... <page>".
-    index_text = " ".join(text for number, text in enumerate(_pdf_page_texts(pdf_path), 1)
-                          if number in _index_page_set(_pdf_page_texts(pdf_path)))
+    # The printed index line must carry the number as well: "<entry> ... <page>".  The indexes
+    # are the pages with an index heading plus whatever else precedes the first caption.
+    index_pages = _index_page_set(page_texts)
+    first_caption_page = min(actual_pages.values(), default=0)
+    index_text = " ".join(text for number, text in enumerate(page_texts, 1)
+                          if number in index_pages or number < first_caption_page)
     unprinted = [text for text in entry_texts
                  if index_entries.get(text) is not None
                  and not re.search(re.escape(_normalise(text)) + r"[\s.]*" + str(index_entries[text]) + r"(?!\d)",
@@ -1134,6 +1215,7 @@ def verify_report(report_folder: str, docx_path: Optional[str] = None,
         for built, expected in zip(document.tables, tables))
 
     meta = content["metadata"]
+    times = heading_times(content)
     title_values = [content["title"], meta["author"], meta["catalog"], meta["school_year"], meta["date"]]
 
     checks = {
@@ -1149,10 +1231,9 @@ def verify_report(report_folder: str, docx_path: Optional[str] = None,
         "declaration_with_place_and_date":
             DECLARATION_HEADING in all_text and f"{meta['place']}, {meta['signing_date']}" in all_text,
         "signature_block_removed": not any(p.text.strip() == "Unterschrift" for p in paragraphs),
-        "step_headings_timed_from_screenshots": [
-            p.text for p in paragraphs if p.style is not None and p.style.name == "Heading 2"
-        ] == [heading_display(content, i) for i, block in enumerate(content["blocks"])
-              if block.get("type") == "heading" and block["level"] == 2],
+        "step_headings_timed_from_screenshots": styled("Heading 2") == [
+            heading_display(content, i, times) for i, block in enumerate(content["blocks"])
+            if block.get("type") == "heading" and block["level"] == 2],
         "screenshots_in_chronological_order": not chronology_problems(content),
     }
 
@@ -1169,21 +1250,23 @@ def verify_report(report_folder: str, docx_path: Optional[str] = None,
 
     checks["pdf_exists"] = bool(pdf_path) and Path(pdf_path).is_file()
     if checks["pdf_exists"]:
-        page_texts = _pdf_page_texts(pdf_path)
+        reader = PdfReader(str(pdf_path))  # parsed once for every check below
+        page_texts = _page_texts(reader)
         pdf_text = " ".join(page_texts)
-        pdf_images = _count_pdf_images(pdf_path)
-        headings = [heading_display(content, i) for i, block in enumerate(content["blocks"])
+        pdf_images = _count_pdf_images(reader)
+        headings = [heading_display(content, i, times) for i, block in enumerate(content["blocks"])
                     if block.get("type") == "heading"]
         headings.append(DECLARATION_HEADING)
         missing_toc = [h for h in headings if pdf_text.count(_normalise(h)) < 2]
-        page_fill = _measure_page_fill(pdf_path)
+        page_fill = _measure_page_fill(reader)
+        sparse_pages = [p for p in page_fill[:-1] if p["fill"] < SPARSE_PAGE_FILL]
 
         checks["pdf_image_count_matches_input"] = pdf_images == len(figures)
         checks["toc_lists_all_headings"] = not missing_toc
-        checks["no_sparse_pages"] = not [p for p in page_fill[:-1] if p["fill"] < SPARSE_PAGE_FILL]
+        checks["no_sparse_pages"] = not sparse_pages
         result.update({"pages": len(page_texts), "images_in_pdf": pdf_images,
                        "headings_missing_in_toc": missing_toc, "page_fill": page_fill,
-                       "sparse_pages": [p for p in page_fill[:-1] if p["fill"] < SPARSE_PAGE_FILL]})
+                       "sparse_pages": sparse_pages})
 
         if index_entries is None:
             # Stand-alone check: read the numbers the indexes were built with from the DOCX.
@@ -1192,7 +1275,7 @@ def verify_report(report_folder: str, docx_path: Optional[str] = None,
                 entry, _, page = text.partition("\t")
                 index_entries[entry] = int(page) if page.strip().isdigit() else None
         index_check = _verify_index_pages(
-            pdf_path, expected_captions + expected_table_captions, index_entries)
+            page_texts, expected_captions + expected_table_captions, index_entries)
         checks["all_index_entries_have_pages"] = not index_check["missing_page_numbers"]
         checks["index_page_numbers_correct"] = (
             not index_check["mismatches"] and not index_check["not_printed_in_index"])
@@ -1231,6 +1314,17 @@ def _write_readme(report_folder: Path, content: Dict, template_path: str) -> Non
     (report_folder / WORK_DIR / "README.md").write_text("\n".join(lines), encoding="utf-8")
 
 
+def _locked(path: Path) -> bool:
+    """True when an existing file cannot be replaced (open in Word or a PDF viewer on Windows)."""
+    if not path.exists():
+        return False
+    try:
+        with open(path, "r+b"):
+            return False
+    except PermissionError:
+        return True
+
+
 def build_report(report_folder: str, template_path: Optional[str] = None,
                  max_layout_passes: int = 4) -> Dict:
     """Build the DOCX (``work/``) and the hand-in PDF (``final/``) and verify the result.
@@ -1256,7 +1350,7 @@ def build_report(report_folder: str, template_path: Optional[str] = None,
     final_pdf = final_folder / f"{content['output_basename']}.pdf"
     # Rendered in work/ first: final/ only ever receives a finished build, and a hand-in PDF
     # that is open in a viewer (locked on Windows) cannot break the build half-way.
-    pdf_path = work_folder / "_build.pdf"
+    pdf_path = work_folder / BUILD_PDF
 
     entry_texts = ([figure["entry"] for figure in expected_figures(content)]
                    + [table["entry"] for table in expected_tables(content)])
@@ -1266,21 +1360,30 @@ def build_report(report_folder: str, template_path: Optional[str] = None,
     passes_used = 0
     converged = False
 
-    for attempt in range(1, max_layout_passes + 1):
-        passes_used = attempt
-        _build_document(template_path, content, screenshots, page_numbers).save(str(docx_path))
+    image_cache: Dict = {}
+    session = _UnoSession()
+    try:
+        for attempt in range(1, max_layout_passes + 1):
+            passes_used = attempt
+            _build_document(template_path, content, screenshots, page_numbers, image_cache).save(str(docx_path))
 
-        if pdf_path.exists():
-            pdf_path.unlink()
-        exported, export_message = export_pdf_with_uno(str(docx_path), str(pdf_path))
-        if not exported or not pdf_path.exists():
-            break
+            if pdf_path.exists():
+                try:
+                    pdf_path.unlink()
+                except PermissionError:
+                    raise RuntimeError(f"{pdf_path} ist in einem anderen Programm geöffnet. "
+                                       "Datei schließen und neu erzeugen.") from None
+            exported, export_message = session.export(str(docx_path), str(pdf_path))
+            if not exported or not pdf_path.exists():
+                break
 
-        measured = _measure_index_pages(str(pdf_path), entry_texts)
-        if page_numbers is not None and measured == page_numbers:
-            converged = True
-            break
-        page_numbers = measured
+            measured = _measure_index_pages(_pdf_page_texts(str(pdf_path)), entry_texts)
+            if page_numbers is not None and measured == page_numbers:
+                converged = True
+                break
+            page_numbers = measured
+    finally:
+        session.close()
 
     verification = verify_report(
         str(report_folder), str(docx_path),
@@ -1293,6 +1396,9 @@ def build_report(report_folder: str, template_path: Optional[str] = None,
     final_written = False
     if pdf_path.exists():
         try:
+            # Checked up front so final/ never ends up with a new DOCX next to an old PDF.
+            if _locked(final_docx) or _locked(final_pdf):
+                raise PermissionError
             shutil.copyfile(docx_path, final_docx)
             shutil.copyfile(pdf_path, final_pdf)
             pdf_path.unlink()
@@ -1304,7 +1410,7 @@ def build_report(report_folder: str, template_path: Optional[str] = None,
     verification["checks"]["final_files_written"] = final_written
     verification["passed"] = all(verification["checks"].values())
 
-    source_pdfs = sorted(p.name for p in work_folder.glob("*.pdf"))
+    source_pdfs = sorted(p.name for p in work_folder.glob("*.pdf") if p.name != BUILD_PDF)
     manifest = {
         "title": content["title"],
         "generated_at": datetime.now().isoformat(timespec="seconds"),

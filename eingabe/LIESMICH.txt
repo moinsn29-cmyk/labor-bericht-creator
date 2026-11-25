@@ -1,7 +1,7 @@
 Hier kannst du die Dateien fuer einen neuen Bericht ablegen:
 
 - die Aufgabenstellung (PDF)
-- die Word-Vorlage (DOCX), falls du nicht die mitgelieferte nehmen willst
+- die Word-Vorlage deiner Schule (DOCX)
 - alle Screenshots der Uebung (PNG oder JPG), mit den Original-Dateinamen
   wie "Screenshot 2026-11-23 131924.png" - daraus werden die Uhrzeiten gelesen
 
