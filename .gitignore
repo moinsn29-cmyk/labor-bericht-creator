@@ -1,0 +1,30 @@
+# Personal data of whoever uses the bundle
+profil.json
+eingabe/*
+!eingabe/LIESMICH.txt
+
+# Reports and build artefacts (never commit student reports, screenshots or exercise sheets)
+reports/
+**/work/
+**/final/
+_build.pdf
+*.tmp
+~$*
+
+# Python
+__pycache__/
+*.pyc
+
+# Local secrets and editor/agent state
+.env
+*.env
+.claude/settings.local.json
+
+# Templates, exercise sheets and screenshots are always provided by the user
+*.docx
+*.doc
+*.dotx
+*.pdf
+*.png
+*.jpg
+*.jpeg

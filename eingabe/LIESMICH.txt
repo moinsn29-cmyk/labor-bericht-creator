@@ -1,0 +1,9 @@
+Hier kannst du die Dateien fuer einen neuen Bericht ablegen:
+
+- die Aufgabenstellung (PDF)
+- die Word-Vorlage (DOCX), falls du nicht die mitgelieferte nehmen willst
+- alle Screenshots der Uebung (PNG oder JPG), mit den Original-Dateinamen
+  wie "Screenshot 2026-11-23 131924.png" - daraus werden die Uhrzeiten gelesen
+
+Du kannst dem Agenten stattdessen auch einfach sagen, wo die Dateien liegen.
+Die Dateien werden in den Berichtsordner kopiert, deine Originale bleiben unveraendert.

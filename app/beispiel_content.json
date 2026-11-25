@@ -1,0 +1,52 @@
+{
+  "title": "Titel der Übung laut Aufgabenstellung",
+  "slug": "titel-der-uebung",
+  "lab_date": "2026-11-23",
+  "output_basename": "2IB_Nachname_ILA_KPT_Thema",
+  "template": "Vorlage_Laborbericht_PG_V2.docx",
+  "metadata": {
+    "author": "Vorname Nachname",
+    "catalog": "2IB",
+    "school_year": "25/26 LG-B",
+    "exercise_number": "1",
+    "date": "23.11.2026",
+    "place": "Salzburg",
+    "signing_date": "24.11.2026"
+  },
+  "unused_screenshots": [
+    { "file": "Screenshot 2026-11-23 130117.png", "reason": "Abgeschnittene Zweitaufnahme von Screenshot 2026-11-23 130129.png" }
+  ],
+  "blocks": [
+    { "type": "heading", "level": 1, "text": "Einleitung und Zusammenfassung" },
+    { "type": "text", "text": "Worum es in der Übung ging, was gemacht wurde und was dabei herauskam." },
+    { "type": "text", "text": "Bei jedem Arbeitsschritt steht in der Überschrift die Uhrzeit der ersten Aufnahme dieses Schritts. Schritte, zu denen keine Aufnahme gemacht wurde, haben keine Uhrzeit." },
+
+    { "type": "heading", "level": 1, "text": "Inventarliste" },
+    { "type": "heading", "level": 2, "text": "Hardware" },
+    { "type": "bullets", "items": ["Gerät 1", "Gerät 2"] },
+    { "type": "heading", "level": 2, "text": "Software" },
+    { "type": "bullets", "items": ["Programm 1", "Programm 2"] },
+
+    { "type": "heading", "level": 1, "text": "Übungsdurchführung (Schrittprotokoll)" },
+    { "type": "heading", "level": 2, "text": "Erster Arbeitsschritt laut Aufgabenstellung" },
+    { "type": "text", "text": "Was in diesem Schritt gemacht wurde, in eigenen Worten. Ergebnis siehe {abb:ping}." },
+    { "type": "code", "lines": ["C:\\Users\\schueler>ping 10.0.0.5"] },
+    { "type": "figure", "id": "ping", "file": "Screenshot 2026-11-23 130129.png",
+      "caption": "Ping auf den Rechner mit 0 % Paketverlust", "crop": [0, 0, 708, 294] },
+    { "type": "heading", "level": 2, "text": "Funktionstest" },
+    { "type": "text", "text": "Zum Abschluss wurden die Prüfpunkte der Übungsanweisung kontrolliert:" },
+    { "type": "table", "caption": "Funktionstest",
+      "header": ["Prüfung", "Ergebnis", "Nachweis"], "widths_cm": [7.6, 2.2, 6.2],
+      "rows": [["Netzwerkverbindung funktioniert", "erfüllt", "{abb:ping}"]] },
+
+    { "type": "heading", "level": 1, "text": "Erweiterung / Zusatzaufgabe" },
+    { "type": "text", "text": "Erweiterungen, in der Reihenfolge, in der sie bearbeitet wurden." },
+
+    { "type": "heading", "level": 1, "text": "Einsatzgebiet" },
+    { "type": "text", "text": "Wofür man das Gelernte in der Praxis braucht." },
+    { "type": "heading", "level": 1, "text": "Persönliche Reflexion (Erkenntnisse)" },
+    { "type": "text", "text": "Ich-Form: was gut lief, was ich beim nächsten Mal anders mache." },
+    { "type": "heading", "level": 1, "text": "Quellen und verwendete Hilfsmittel" },
+    { "type": "bullets", "items": ["Übungsunterlage …", "Vorlage …", "offizielle Dokumentation …"] }
+  ]
+}

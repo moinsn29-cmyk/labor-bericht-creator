@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "laborbericht": {
+      "command": "C:\Program Files\LibreOffice\program\python.exe",
+      "args": ["app/mcp_server.py"]
+    }
+  }
+}
