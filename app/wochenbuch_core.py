@@ -185,25 +185,105 @@ def _resolve(text: str, refs: Dict[str, str]) -> str:
     return re.sub(r"\{((?:abb|tab):[A-Za-z0-9_]+)\}", sub, text)
 
 
-def _build_document(folder: Path, cfg: Dict) -> Document:
+def heading_entries(blocks: List[Dict]) -> List[Dict]:
+    """Numbered headings in document order: block index, level, number ("1.1.2"), text, anchor."""
+    out, counters = [], [0, 0, 0]
+    for i, b in enumerate(blocks):
+        if b["type"] in ("h1", "h2", "h3"):
+            level = int(b["type"][1])
+            counters[level - 1] += 1
+            for k in range(level, 3):
+                counters[k] = 0
+            out.append({"index": i, "level": level, "number": ".".join(str(c) for c in counters[:level]),
+                        "text": b["text"], "anchor": f"_TocWb{len(out) + 1:03d}"})
+    return out
+
+
+def _add_bookmark(paragraph, anchor: str, bookmark_id: int) -> None:
+    start = OxmlElement("w:bookmarkStart")
+    start.set(qn("w:id"), str(bookmark_id))
+    start.set(qn("w:name"), anchor)
+    end = OxmlElement("w:bookmarkEnd")
+    end.set(qn("w:id"), str(bookmark_id))
+    p = paragraph._p
+    first_run = p.find(qn("w:r"))
+    if first_run is not None:
+        first_run.addprevious(start)
+    else:
+        p.append(start)
+    p.append(end)
+
+
+def _toc_entry_xml(style: str, entry: Dict, page: str, first: bool) -> str:
+    from xml.sax.saxutils import escape
+    ns = ('xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"')
+    fld = lambda t: f'<w:r><w:fldChar w:fldCharType="{t}"/></w:r>'
+    head = ""
+    ppr = f'<w:pPr><w:pStyle w:val="{style}"/>' + ('<w:tabs><w:tab w:val="left" w:pos="851"/></w:tabs>' if first else "") + "</w:pPr>"
+    if first:
+        head = (fld("begin") + '<w:r><w:instrText xml:space="preserve"> TOC \\o "1-3" \\h \\z \\u </w:instrText></w:r>'
+                + fld("separate"))
+    link = (f'<w:hyperlink w:anchor="{entry["anchor"]}" w:history="1">'
+            f'<w:r><w:t>{escape(entry["number"])}</w:t></w:r><w:r><w:tab/></w:r>'
+            f'<w:r><w:t xml:space="preserve">{escape(entry["text"])}</w:t></w:r><w:r><w:tab/></w:r>'
+            + fld("begin") + f'<w:r><w:instrText xml:space="preserve"> PAGEREF {entry["anchor"]} \\h </w:instrText></w:r>'
+            + fld("separate") + f'<w:r><w:t>{escape(page)}</w:t></w:r>' + fld("end") + "</w:hyperlink>")
+    return f"<w:p {ns}>{ppr}{head}{link}</w:p>"
+
+
+def _populate_toc(doc: Document, entries: List[Dict], pages: Dict[str, int]) -> None:
+    """Replace the Vorlage's example entries with the real ones (cached field result)."""
+    from docx.oxml import parse_xml
+    body = doc.element.body
+    toc = None
+    for sdt in body.iter(qn("w:sdt")):
+        gallery = sdt.find(".//" + qn("w:docPartGallery"))
+        if gallery is not None and gallery.get(qn("w:val")) == "Table of Contents":
+            toc = sdt
+            break
+    if toc is None:
+        raise RuntimeError("Vorlage geaendert: Inhaltsverzeichnis nicht gefunden")
+    content = toc.find(qn("w:sdtContent"))
+    paras = content.findall(qn("w:p"))
+    if len(paras) < 3:
+        raise RuntimeError("Vorlage geaendert: Inhaltsverzeichnis hat keine Eintraege")
+    title, closing = paras[0], paras[-1]
+    for p in paras[1:-1]:
+        content.remove(p)
+    anchor_after = title
+    for n, e in enumerate(entries):
+        el = parse_xml(_toc_entry_xml(f"Verzeichnis{e['level']}", e, str(pages.get(e["anchor"], 1)), n == 0))
+        anchor_after.addnext(el)
+        anchor_after = el
+
+
+def _compact_toc_styles(doc: Document) -> None:
+    for name in ("toc 1", "toc 2", "toc 3"):
+        try:
+            st = doc.styles[name]
+        except KeyError:
+            continue
+        st.paragraph_format.line_spacing = 1.0
+        st.paragraph_format.space_before = Pt(0)
+        st.paragraph_format.space_after = Pt(2)
+
+
+def _build_document(folder: Path, cfg: Dict, pages: Dict[str, int] | None = None) -> Document:
     work = folder / WORK_DIR
     doc = Document(str(work / cfg["template"]))
     _prepare_template(doc, cfg)
     refs = _number_refs(cfg["blocks"])
     fig_n = tab_n = 0
+    entries = heading_entries(cfg["blocks"])
+    by_index = {e["index"]: e for e in entries}
+    _populate_toc(doc, entries, pages or {})
+    _compact_toc_styles(doc)
 
-    for b in cfg["blocks"]:
+    for idx, b in enumerate(cfg["blocks"]):
         kind = b["type"]
-        if kind in ("h1", "h2"):
-            doc.add_paragraph(_resolve(b["text"], refs), style=f"Heading {kind[1]}")
-        elif kind == "h3":
-            # A bold line instead of Heading 3: the Vorlage's table of contents lists only
-            # the levels 1 and 2 and should stay one page long.
-            para = doc.add_paragraph()
-            para.paragraph_format.space_before = Pt(10)
-            para.paragraph_format.space_after = Pt(0)
-            _keep_with_next(para)
-            para.add_run(_resolve(b["text"], refs)).bold = True
+        if kind in ("h1", "h2", "h3"):
+            para = doc.add_paragraph(_resolve(b["text"], refs), style=f"Heading {kind[1]}")
+            _add_bookmark(para, by_index[idx]["anchor"], 1000 + idx)
         elif kind == "p":
             doc.add_paragraph(_resolve(b["text"], refs))
         elif kind in ("bullets", "numbered"):
@@ -276,14 +356,6 @@ def _build_document(folder: Path, cfg: Dict) -> Document:
         else:
             raise ValueError(f"unbekannter Blocktyp: {kind}")
 
-    # The table of contents in the DOCX keeps the Vorlage's entries until Word refreshes it;
-    # the PDF is already refreshed by LibreOffice. Word asks once whether to update fields.
-    settings = doc.settings.element
-    if settings.find(qn("w:updateFields")) is None:
-        update = OxmlElement("w:updateFields")
-        update.set(qn("w:val"), "true")
-        settings.append(update)
-
     props = doc.core_properties
     props.author = cfg["name"]
     props.title = cfg.get("titel") or "Wochenbuch"
@@ -302,7 +374,33 @@ def _all_text(cfg: Dict) -> str:
     return "\n".join(parts)
 
 
-def verify(folder: Path, cfg: Dict, docx_path: Path, pdf_path: Path) -> Dict:
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def first_body_page(pages: List[str]) -> int:
+    """Index of the first page after the table of contents (no dot leaders in its text)."""
+    for i in range(1, len(pages)):
+        if "....." not in pages[i] and "Inhalt" not in pages[i][:40]:
+            return i
+    return len(pages)
+
+
+def measure_pages(pdf_path: Path, entries: List[Dict]) -> Dict[str, int]:
+    """Page number (1-based) of every numbered heading, searched in document order."""
+    texts = [_norm(pg.extract_text() or "") for pg in PdfReader(str(pdf_path)).pages]
+    page, result = first_body_page(texts), {}
+    for e in entries:
+        needle = _norm(f"{e['number']} {e['text']}")
+        for i in range(page, len(texts)):
+            if needle in texts[i]:
+                page = i
+                result[e["anchor"]] = i + 1
+                break
+    return result
+
+
+def verify(folder: Path, cfg: Dict, docx_path: Path, pdf_path: Path, toc_pages: Dict[str, int] | None = None) -> Dict:
     checks: Dict[str, bool] = {}
     notes: Dict[str, object] = {}
     text = _all_text(cfg)
@@ -340,16 +438,18 @@ def verify(folder: Path, cfg: Dict, docx_path: Path, pdf_path: Path) -> Dict:
     if cfg.get("titel"):  # the Vorlage prints the title in capitals
         checks["title_page_filled"] = checks["title_page_filled"] and cfg["titel"].lower() in first.lower()
 
-    norm = lambda s: re.sub(r"\s+", " ", s)
-    body_text = norm("\n".join(pages[2:]))
-    missing = [b["text"] for b in cfg["blocks"]
-               if b["type"] in ("h1", "h2", "h3") and norm(b["text"]) not in body_text]
-    checks["headings_in_pdf"] = not missing
+    entries = heading_entries(cfg["blocks"])
+    body_start = first_body_page(pages)
+    body_text = _norm("\n".join(pages[body_start:]))
+    toc = _norm("\n".join(pages[1:body_start]))
+    missing = [f"{e['number']} {e['text']}" for e in entries if _norm(f"{e['number']} {e['text']}") not in body_text]
+    checks["headings_numbered_in_pdf"] = not missing
     if missing:
         notes["headings_missing"] = missing
-    toc = norm(pages[1]) if n > 1 else ""
-    checks["toc_lists_headings"] = all(norm(b["text"]) in toc for b in cfg["blocks"] if b["type"] in ("h1", "h2"))
-    checks["toc_page_numbers_updated"] = "- 3 -" not in toc or n <= 3
+    checks["toc_lists_all_headings"] = all(_norm(e["text"]) in toc for e in entries)
+    measured = measure_pages(pdf_path, entries)
+    checks["toc_page_numbers_correct"] = bool(toc_pages) and measured == toc_pages and len(measured) == len(entries)
+    notes["toc_pages"] = f"{body_start - 1} Seite(n) Inhaltsverzeichnis"
 
     thin = [i + 1 for i, t in enumerate(pages) if i >= 2 and len(t.strip()) < 150]
     checks["no_nearly_empty_pages"] = not thin
@@ -366,16 +466,28 @@ def build(folder_arg: str) -> Dict:
     docx_path = work / f"{cfg['output_basename']}.docx"
     pdf_path = work / BUILD_PDF
 
-    _build_document(folder, cfg).save(str(docx_path))
-    if pdf_path.exists():
-        pdf_path.unlink()
+    entries = heading_entries(cfg["blocks"])
+    pages_used: Dict[str, int] = {}
+    exported, message = False, "nicht ausgefuehrt"
     session = core._export_session()
     try:
-        exported, message = session.export(str(docx_path), str(pdf_path))
+        # Page numbers can only be measured on a rendered PDF: build, measure, build again
+        # with the numbers, until a pass reproduces the numbers it was built with.
+        for _ in range(4):
+            _build_document(folder, cfg, pages_used).save(str(docx_path))
+            if pdf_path.exists():
+                pdf_path.unlink()
+            exported, message = session.export(str(docx_path), str(pdf_path))
+            if not exported or not pdf_path.exists():
+                break
+            measured = measure_pages(pdf_path, entries)
+            if measured == pages_used:
+                break
+            pages_used = measured
     finally:
         session.close()
 
-    result = verify(folder, cfg, docx_path, pdf_path)
+    result = verify(folder, cfg, docx_path, pdf_path, pages_used)
     checks = result["checks"]
     checks["pdf_exported"] = exported and pdf_path.exists()
 

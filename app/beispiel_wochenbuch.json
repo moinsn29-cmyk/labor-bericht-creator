@@ -13,7 +13,7 @@
     {"type": "p", "text": "Woche KW 48 (23.11. bis 27.11.2026)"},
     {"type": "p", "text": "Kurze Einleitung in eigenen Worten."},
     {"type": "h2", "text": "Zusammenfassung des Themas"},
-    {"type": "h3", "text": "Ein Unterthema (fette Zeile, nicht im Inhaltsverzeichnis)"},
+    {"type": "h3", "text": "Ein Unterthema (nummeriert, steht im Inhaltsverzeichnis)"},
     {"type": "p", "text": "Text. Verweise: {abb:bild1} und {tab:tabelle1}."},
     {"type": "bullets", "items": ["erster Punkt", "zweiter Punkt"]},
     {"type": "numbered", "items": ["erster Schritt", "zweiter Schritt"]},

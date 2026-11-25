@@ -38,8 +38,8 @@ Create the report folder `<DOCUMENTS>/<Titel>_<YYYY-MM-DD>/` with `work/` and `f
 - **ASCII only** apart from German letters (ae oe ue ss as real umlauts are fine). No dashes, arrows, curly quotes, Omega, degree sign, superscripts: write "Ohm", "Grad Celsius", "*", "/". The build fails otherwise.
 - **No stock phrases** (the list is `BANNED_PHRASES` in `wochenbuch_core.py`; the build fails on them).
 - **Length**: 15 to 20 pages including title page and table of contents; the build checks it. The Vorlage uses 12 pt with 1.5 line spacing, about 170 words per page. Do not pad: tables, small diagrams drawn with Pillow (`work/fig_*.png`, text at least about 8 pt at print size) and calculated examples are legitimate content.
-- Sub-headings (`h3`) are bold lines; only `h1` and `h2` appear in the table of contents, as in the Vorlage.
-- Quellen: the course documents, the pages you really read with URL and retrieval date, and, if the student agreed, "KI-Assistent (Claude) ...".
+- Headings `h1`, `h2`, `h3` are real, numbered Word headings (1, 1.1, 1.1.1). The builder writes the table of contents entries, their page numbers and working links into the DOCX itself and checks them against the PDF. Keep heading texts short so the table of contents stays on one page.
+- Quellen: the course documents, the pages you really read with URL and retrieval date, and, if the student agreed, exactly one plain line: "Dieses Wochenbuch wurde mit Hilfe eines KI-Assistenten erstellt." Nothing more, nothing less.
 
 ## 4. Build and check
 
@@ -47,7 +47,7 @@ Create the report folder `<DOCUMENTS>/<Titel>_<YYYY-MM-DD>/` with `work/` and `f
 <PYTHON> app/wochenbuch_core.py "<report folder>"
 ```
 
-It prints `passed`, `pages`, `failed_checks`; details are in `work/report.json`. Fix `wochenbuch.json` and rebuild; never weaken a check in the code. The PDF is rendered by LibreOffice (table of contents refreshed), DOCX and PDF are copied to `final/`. The DOCX asks Word to update its fields once when opened.
+It prints `passed`, `pages`, `failed_checks`; details are in `work/report.json`. Fix `wochenbuch.json` and rebuild; never weaken a check in the code. The PDF is rendered by LibreOffice (table of contents refreshed), DOCX and PDF are copied to `final/`. The DOCX carries the finished table of contents.
 
 Then read the PDF page by page (`Read` with `pages`, at most 8 at a time) for cut-off figures, gaps, justified lists and wrong numbers.
 
