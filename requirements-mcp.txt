@@ -1,3 +1,4 @@
 # Optional: only for the MCP server (app/mcp_server.py) in normal mode.
 -r requirements.txt
-mcp>=1.13
+# The server uses the 1.x API (FastMCP), the same as the bundled copy in app/mcp_libs (1.13.0).
+mcp>=1.13,<2

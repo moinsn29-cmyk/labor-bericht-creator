@@ -47,9 +47,9 @@ def get_status() -> dict:
 
 
 @mcp.tool()
-def inspect_assets(report_folder: str, run_ocr: bool = False) -> dict:
-    """List the PDFs, content.json and screenshots of a report folder."""
-    return list_assets(report_folder, run_ocr=run_ocr)
+def inspect_assets(report_folder: str) -> dict:
+    """List the PDFs, content.json and screenshots (with pixel sizes) of a report folder."""
+    return list_assets(report_folder)
 
 
 @mcp.tool()

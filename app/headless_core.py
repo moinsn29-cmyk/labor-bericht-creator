@@ -1,4 +1,4 @@
-r"""Tkinter-free report generation core for the Laborbericht app.
+r"""Report generation core of the Laborbericht generator.
 
 A report lives in its own folder:
 
@@ -52,13 +52,7 @@ def _add_local_dependencies() -> str:
     if all(importlib.util.find_spec(name) is not None for name in REQUIRED_MODULES):
         return "normal"
 
-    candidates = [HERE / "_libs", HERE / "libs"]
-    if os.environ.get("LOCALAPPDATA"):
-        # Without the variable the path would be relative and pick up a folder in the current directory.
-        candidates.insert(0, Path(os.environ["LOCALAPPDATA"]) / "laborbericht-mcp" / "libs")
-    for path in candidates:
-        if path.exists():
-            sys.path.insert(0, str(path))
+    sys.path.insert(0, str(HERE / "libs"))
     return "locked-down"
 
 
@@ -241,40 +235,18 @@ def extract_pdf(pdf_path: str) -> Dict:
     return {"path": str(path), "pages": len(reader.pages), "text": "\n\n".join(all_text), "pages_data": pages}
 
 
-def ocr_screenshots(folder: str, run_ocr: bool = False) -> List[Dict]:
-    """Collect screenshot metadata from ``<report folder>/screenshots``.
-
-    OCR is very slow (minutes for a handful of images) and is only a help for writing
-    ``content.json``; the build itself never needs it.
-    """
-    ocr = None
-    if run_ocr:
-        try:
-            from rapidocr_onnxruntime import RapidOCR
-            ocr = RapidOCR()
-        except Exception:
-            ocr = None
-
-    image_paths = _images(Path(folder) / SCREENSHOT_DIR)
-
+def screenshot_info(folder: str) -> List[Dict]:
+    """Name, path and pixel size of every image in ``<report folder>/screenshots``."""
     results = []
-    for image_path in image_paths:
-        text = ""
-        if ocr is not None:
-            try:
-                result, _ = ocr(str(image_path))
-                if result:
-                    text = "\n".join(line[1].strip() for line in result if len(line) > 1)
-            except Exception:
-                text = ""
+    for image_path in _images(Path(folder) / SCREENSHOT_DIR):
         with Image.open(image_path) as image:
             width, height = image.size
         results.append({"path": str(image_path), "name": image_path.name,
-                        "width": width, "height": height, "ocr": text})
+                        "width": width, "height": height})
     return results
 
 
-def list_assets(folder: str, run_ocr: bool = False) -> Dict:
+def list_assets(folder: str) -> Dict:
     """List the source PDFs, content.json and screenshots of a report folder."""
     folder_path = Path(folder)
     content_path = folder_path / WORK_DIR / CONTENT_FILE
@@ -282,7 +254,7 @@ def list_assets(folder: str, run_ocr: bool = False) -> Dict:
         "folder": str(folder_path),
         "pdfs": sorted(str(p) for p in (folder_path / WORK_DIR).glob("*.pdf") if p.name != BUILD_PDF),
         "content": str(content_path) if content_path.is_file() else None,
-        "screenshots": ocr_screenshots(str(folder_path), run_ocr=run_ocr),
+        "screenshots": screenshot_info(str(folder_path)),
     }
 
 
