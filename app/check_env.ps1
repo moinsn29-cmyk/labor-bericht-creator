@@ -1,4 +1,5 @@
-# Prueft die Umgebung und gibt die Pfade aus, die der Agent braucht.
+# Prueft die Umgebung und gibt die Pfade aus, die der Agent braucht (gesperrter Modus:
+# alles laeuft mit LibreOffices Python). Auf Rechnern mit eigenem Python: python app/check_env.py
 # Aufruf:  powershell -NoProfile -ExecutionPolicy Bypass -File app\check_env.ps1
 # Laeuft auch im Constrained Language Mode der Schulrechner: keine .NET-Aufrufe, nur Cmdlets.
 $app = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -18,6 +19,6 @@ if (-not $python) {
 }
 Write-Output "LIBREOFFICE_PYTHON=$python"
 
-$test = "import sys; sys.path.insert(0, r'$app'); import headless_core as h, uno; print('DOCUMENTS=' + h.documents_folder()); print('IMPORTS=OK'); print('SOFFICE=' + str(h.SOFFICE)); print('SOFFICE_FOUND=' + str(h.SOFFICE.is_file()))"
+$test = "import sys; sys.path.insert(0, r'$app'); import headless_core as h, uno; print('MODE=' + h.MODE); print('DOCUMENTS=' + h.documents_folder()); print('IMPORTS=OK'); print('SOFFICE=' + str(h.SOFFICE)); print('SOFFICE_FOUND=' + str(h.SOFFICE.is_file()))"
 & $python -c $test
 if ($LASTEXITCODE -ne 0) { Write-Output "IMPORTS=FEHLER"; exit 1 }

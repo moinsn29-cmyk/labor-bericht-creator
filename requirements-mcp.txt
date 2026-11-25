@@ -1,0 +1,3 @@
+# Optional: only for the MCP server (app/mcp_server.py) in normal mode.
+-r requirements.txt
+mcp>=1.13

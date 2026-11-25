@@ -12,6 +12,7 @@ _build.pdf
 ~$*
 
 # Python
+.venv/
 __pycache__/
 *.pyc
 

@@ -1,0 +1,29 @@
+{
+  "template": "Wochenbuch DTS2.docx",
+  "output_basename": "2IB_Nachname_Wochenbuch_Thema",
+  "titel": "Wochenbuch DTS 2",
+  "name": "Vorname Nachname",
+  "klasse": "2IB",
+  "schuljahr": "2026/27",
+  "kw": "48",
+  "pages_min": 15,
+  "pages_max": 20,
+  "blocks": [
+    {"type": "h1", "text": "Thema der Woche: Beispielthema"},
+    {"type": "p", "text": "Woche KW 48 (23.11. bis 27.11.2026)"},
+    {"type": "p", "text": "Kurze Einleitung in eigenen Worten."},
+    {"type": "h2", "text": "Zusammenfassung des Themas"},
+    {"type": "h3", "text": "Ein Unterthema (fette Zeile, nicht im Inhaltsverzeichnis)"},
+    {"type": "p", "text": "Text. Verweise: {abb:bild1} und {tab:tabelle1}."},
+    {"type": "bullets", "items": ["erster Punkt", "zweiter Punkt"]},
+    {"type": "numbered", "items": ["erster Schritt", "zweiter Schritt"]},
+    {"type": "formula", "text": "U = R * I"},
+    {"type": "table", "id": "tabelle1", "caption": "Beispieltabelle",
+     "header": ["Spalte A", "Spalte B"], "rows": [["a1", "b1"], ["a2", "b2"]], "widths_cm": [8.0, 8.0]},
+    {"type": "figure", "id": "bild1", "file": "fig_beispiel.png", "caption": "Beispielabbildung", "width_cm": 10},
+    {"type": "h2", "text": "Aufgabe"},
+    {"type": "p", "text": "Die Fragen des Arbeitsauftrags, jede sichtbar beantwortet."},
+    {"type": "h2", "text": "Quellen"},
+    {"type": "bullets", "items": ["Skriptum ... (Moodle-Kurs ...)", "Titel der Seite, URL (abgerufen am TT.MM.JJJJ)"]}
+  ]
+}

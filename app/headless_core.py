@@ -9,8 +9,16 @@ A report lives in its own folder:
     <report>/work/report.json        manifest written by build_report()
     <report>/final/                  the finished DOCX and PDF, nothing else
 
-Run it with LibreOffice's own Python, which provides the UNO bridge:
-    "C:\Program Files\LibreOffice\program\python.exe" headless_core.py <report folder>
+It runs in two modes and picks the right one by itself (see ``MODE``):
+
+* normal: an ordinary Python (usually the bundle's ``.venv``) with python-docx, pypdf and
+  Pillow installed from ``requirements.txt``:
+      python headless_core.py <report folder>
+* locked-down: machines without Python, pip or admin rights. LibreOffice's own Python runs
+  the generator and the libraries come from ``app/libs``:
+      "C:\Program Files\LibreOffice\program\python.exe" headless_core.py <report folder>
+
+LibreOffice is needed in both modes: it refreshes the indexes and writes the PDF.
 """
 
 from __future__ import annotations
@@ -20,52 +28,139 @@ import os
 import re
 import sys
 import json
-import time
 import shutil
-import tempfile
 import subprocess
+import importlib.util
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-def _add_local_dependencies() -> None:
-    """Put the bundled libraries first: LibreOffice's Python has no python-docx, pypdf or Pillow."""
-    here = Path(__file__).resolve().parent
-    candidates = [here / "_libs", here / "libs"]
+HERE = Path(__file__).resolve().parent
+REQUIRED_MODULES = ("docx", "pypdf", "PIL", "lxml")
+
+
+def _add_local_dependencies() -> str:
+    """Make python-docx, pypdf, Pillow and lxml importable and return the mode this implies.
+
+    ``normal``: the running Python already has them (pip, venv); nothing is changed.
+    ``locked-down``: it does not, as with LibreOffice's Python on the school machines; the
+    bundled copies in ``app/libs`` (Windows, Python 3.11) are put first on the path.
+    """
+    if str(HERE) not in sys.path:
+        sys.path.insert(0, str(HERE))  # uno_export.py
+    if all(importlib.util.find_spec(name) is not None for name in REQUIRED_MODULES):
+        return "normal"
+
+    candidates = [HERE / "_libs", HERE / "libs"]
     if os.environ.get("LOCALAPPDATA"):
         # Without the variable the path would be relative and pick up a folder in the current directory.
         candidates.insert(0, Path(os.environ["LOCALAPPDATA"]) / "laborbericht-mcp" / "libs")
     for path in candidates:
         if path.exists():
             sys.path.insert(0, str(path))
+    return "locked-down"
 
 
-_add_local_dependencies()
+MODE = _add_local_dependencies()
 
-from PIL import Image
-from pypdf import PdfReader
-from docx import Document
-from docx.shared import Cm, Pt
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.text.paragraph import Paragraph
+try:
+    from PIL import Image
+    from pypdf import PdfReader
+    from docx import Document
+    from docx.shared import Cm, Pt
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.enum.table import WD_TABLE_ALIGNMENT
+    from docx.text.paragraph import Paragraph
+except ImportError as exc:
+    raise ImportError(
+        f"{exc}. Dieses Python ({sys.executable}) hat die benötigten Pakete nicht, und die "
+        "mitgelieferten in app/libs passen nur zu LibreOffices Python 3.11 unter Windows. "
+        "Abhilfe: 'python app/check_env.py --setup' ausführen (legt .venv an und installiert "
+        "requirements.txt) oder den Generator mit LibreOffices Python starten.") from exc
+
+from uno_export import UnoSession, WorkerSession, UnavailableSession
 
 
 def _find_soffice() -> Path:
+    exe = "soffice.exe" if os.name == "nt" else "soffice"
     candidates = []
     if os.environ.get("LIBREOFFICE_PROGRAM"):
-        candidates.append(Path(os.environ["LIBREOFFICE_PROGRAM"]) / "soffice.exe")
-    candidates.append(Path(sys.executable).resolve().parent / "soffice.exe")
-    for root in (os.environ.get("ProgramFiles", r"C:\Program Files"),
-                 os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")):
-        candidates.append(Path(root) / "LibreOffice" / "program" / "soffice.exe")
+        candidates.append(Path(os.environ["LIBREOFFICE_PROGRAM"]) / exe)
+    candidates.append(Path(sys.executable).resolve().parent / exe)
+    if os.name == "nt":
+        if os.environ.get("LOCALAPPDATA"):
+            candidates.append(Path(os.environ["LOCALAPPDATA"]) / "Programs" / "LibreOffice" / "program" / exe)
+        for root in (os.environ.get("ProgramFiles", r"C:\Program Files"),
+                     os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")):
+            candidates.append(Path(root) / "LibreOffice" / "program" / exe)
+    else:
+        for name in ("soffice", "libreoffice"):
+            found = shutil.which(name)
+            if found:
+                candidates.append(Path(found))
+        candidates += [Path("/Applications/LibreOffice.app/Contents/MacOS/soffice"),
+                       Path("/usr/lib/libreoffice/program/soffice"),
+                       Path("/opt/libreoffice/program/soffice"),
+                       Path("/usr/bin/soffice")]
     return next((c for c in candidates if c.is_file()), candidates[-1])
 
 
 SOFFICE = _find_soffice()
+
+_uno_python_cache: List[Optional[Path]] = []
+
+
+def find_uno_python() -> Optional[Path]:
+    """A Python that can ``import uno``: this one, LibreOffice's own, or the system's."""
+    if importlib.util.find_spec("uno") is not None:
+        return Path(sys.executable)
+    if _uno_python_cache:
+        return _uno_python_cache[0]
+
+    program = SOFFICE.resolve().parent
+    candidates = []
+    if os.environ.get("LIBREOFFICE_PYTHON"):
+        candidates.append(Path(os.environ["LIBREOFFICE_PYTHON"]))
+    if os.name == "nt":
+        candidates.append(program / "python.exe")
+    else:
+        candidates += [program / "python",
+                       program.parent / "Resources" / "python",  # macOS app bundle
+                       Path("/usr/bin/python3")]
+        found = shutil.which("python3")
+        if found:
+            candidates.append(Path(found))
+
+    result = None
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            if subprocess.run([str(candidate), "-c", "import uno"], capture_output=True,
+                              stdin=subprocess.DEVNULL, timeout=30).returncode == 0:
+                result = candidate
+                break
+        except (OSError, subprocess.SubprocessError):
+            continue
+    _uno_python_cache.append(result)
+    return result
+
+
+def _export_session(timeout: float = 90.0):
+    """The PDF exporter for this environment (see ``uno_export``)."""
+    if importlib.util.find_spec("uno") is not None:
+        return UnoSession(SOFFICE, timeout)
+    if not SOFFICE.exists():
+        return UnavailableSession(f"LibreOffice nicht gefunden: {SOFFICE}")
+    uno_python = find_uno_python()
+    if uno_python is None:
+        return UnavailableSession(
+            "UNO nicht verfügbar: kein Python mit dem Modul 'uno' gefunden. Es gehört zu LibreOffice "
+            "(Linux: Paket python3-uno installieren) oder LIBREOFFICE_PYTHON auf LibreOffices Python setzen.")
+    return WorkerSession(uno_python, SOFFICE, timeout)
 
 
 def documents_folder() -> str:
@@ -77,7 +172,23 @@ def documents_folder() -> str:
             value, _ = winreg.QueryValueEx(key, "Personal")
         return os.path.expandvars(value)
     except (ImportError, OSError):
-        return str(Path.home() / "Documents")
+        pass
+    try:  # Linux desktops may localise the folder ("Dokumente")
+        result = subprocess.run(["xdg-user-dir", "DOCUMENTS"], capture_output=True, text=True, timeout=10)
+        folder = result.stdout.strip()
+        if result.returncode == 0 and folder and Path(folder) != Path.home():
+            return folder
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return str(Path.home() / "Documents")
+
+
+def environment() -> Dict:
+    """What the generator found on this machine (used by check_env and the MCP server)."""
+    uno_python = find_uno_python() if SOFFICE.is_file() else None
+    return {"mode": MODE, "python": sys.executable, "documents": documents_folder(),
+            "soffice": str(SOFFICE), "soffice_found": SOFFICE.is_file(),
+            "uno_python": str(uno_python) if uno_python else None}
 
 
 IMAGE_PATTERNS = ("*.png", "*.jpg", "*.jpeg")
@@ -975,142 +1086,18 @@ def _measure_page_fill(reader: PdfReader) -> List[Dict]:
 # LibreOffice export
 # ---------------------------------------------------------------------------
 
-class _UnoSession:
-    """A headless soffice with a UNO socket, started on first use and reused until ``close()``.
-
-    Starting LibreOffice takes far longer than exporting a document, so one build keeps a
-    single instance for all of its layout passes.
-    """
-
-    PORT = 2002
-
-    def __init__(self, timeout: float = 90.0) -> None:
-        self.timeout = timeout
-        self._process = None
-        self._desktop = None
-        self._uno = None
-        self._property_value = None
-
-    def _connect(self) -> Tuple[bool, str]:
-        if self._desktop is not None:
-            return True, ""
-        try:
-            import uno
-            from com.sun.star.beans import PropertyValue
-        except Exception as exc:
-            return False, f"UNO nicht verfügbar: {exc}"
-        if not SOFFICE.exists():
-            return False, f"LibreOffice nicht gefunden: {SOFFICE}"
-
-        profile = Path(os.environ.get("TEMP") or tempfile.gettempdir()).absolute() / "loprofile_indexrefresh"
-        profile.mkdir(parents=True, exist_ok=True)
-        cmd = [
-            str(SOFFICE),
-            f"-env:UserInstallation={profile.as_uri()}",
-            "--headless", "--norestore", "--nologo", "--nodefault", "--nofirststartwizard",
-            f"--accept=socket,host=localhost,port={self.PORT};urp;StarOffice.ComponentContext",
-        ]
-        self._process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-        try:
-            local_ctx = uno.getComponentContext()
-            resolver = local_ctx.ServiceManager.createInstanceWithContext(
-                "com.sun.star.bridge.UnoUrlResolver", local_ctx)
-        except Exception as exc:
-            self.close()
-            return False, f"UNO nicht verfügbar: {exc}"
-
-        ctx = None
-        deadline = time.time() + self.timeout
-        while time.time() < deadline:
-            try:
-                ctx = resolver.resolve(
-                    f"uno:socket,host=localhost,port={self.PORT};urp;StarOffice.ComponentContext")
-                break
-            except Exception:
-                time.sleep(0.25)
-
-        if ctx is None:
-            self._process.terminate()
-            self._process = None
-            return False, "Keine Verbindung zum UNO-Bridge (Zeitlimit erreicht)"
-
-        self._desktop = ctx.ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
-        self._uno = uno
-        self._property_value = PropertyValue
-        return True, ""
-
-    def export(self, docx_path: str, pdf_path: str) -> Tuple[bool, str]:
-        connected, message = self._connect()
-        if not connected:
-            return False, message
-
-        def prop(name: str, value):
-            item = self._property_value()
-            item.Name = name
-            item.Value = value
-            return item
-
-        uno = self._uno
-        document = None
-        try:
-            document = self._desktop.loadComponentFromURL(
-                uno.systemPathToFileUrl(str(Path(docx_path).resolve())), "_blank", 0, (prop("Hidden", True),))
-
-            try:
-                document.getTextFields().refresh()
-            except Exception:
-                pass
-
-            indexes = document.getDocumentIndexes()
-            for i in range(indexes.getCount()):
-                indexes.getByIndex(i).update()
-
-            try:
-                document.refresh()
-            except Exception:
-                pass
-
-            document.storeToURL(
-                uno.systemPathToFileUrl(str(Path(pdf_path).resolve())),
-                (prop("FilterName", "writer_pdf_Export"),))
-            return True, f"{indexes.getCount()} Verzeichnisse aktualisiert, PDF exportiert"
-        except Exception as exc:
-            return False, f"UNO-Export fehlgeschlagen: {type(exc).__name__}: {exc}"
-        finally:
-            if document is not None:
-                try:
-                    document.close(True)
-                except Exception:
-                    pass
-
-    def close(self) -> None:
-        desktop, process = self._desktop, self._process
-        self._desktop = self._process = None
-        if desktop is not None:
-            try:
-                desktop.terminate()
-            except Exception:
-                pass
-        if process is not None:
-            try:
-                process.wait(timeout=20)
-            except Exception:
-                process.terminate()
-
-
 def export_pdf_with_uno(docx_path: str, pdf_path: str, timeout: float = 90.0) -> Tuple[bool, str]:
     """Refresh all indexes and export the PDF via the LibreOffice UNO bridge.
 
     ``python-docx`` cannot evaluate fields, so the table of contents would otherwise keep the
     template's entries.  We start a headless soffice with a UNO socket, load the document,
-    update every index, and export straight to PDF.
+    update every index, and export straight to PDF (see ``uno_export``).
 
     The DOCX itself is deliberately **not** written back: a LibreOffice round-trip renames the
     template's custom styles (``Abbildung (user)`` and friends), which would break the
     verification step and any later editing in Word.
     """
-    session = _UnoSession(timeout)
+    session = _export_session(timeout)
     try:
         return session.export(docx_path, pdf_path)
     finally:
@@ -1361,7 +1348,7 @@ def build_report(report_folder: str, template_path: Optional[str] = None,
     converged = False
 
     image_cache: Dict = {}
-    session = _UnoSession()
+    session = _export_session()
     try:
         for attempt in range(1, max_layout_passes + 1):
             passes_used = attempt
@@ -1414,6 +1401,7 @@ def build_report(report_folder: str, template_path: Optional[str] = None,
     manifest = {
         "title": content["title"],
         "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "mode": MODE,
         "metadata": content["metadata"],
         "template": template_path,
         "source_pdf": f"{WORK_DIR}/{source_pdfs[0]}" if source_pdfs else None,

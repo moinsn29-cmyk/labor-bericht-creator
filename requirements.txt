@@ -1,0 +1,6 @@
+# Normal mode only (python app/check_env.py --setup installs these into .venv).
+# The locked-down mode uses the copies in app/libs instead and installs nothing.
+python-docx>=1.2,<2
+pypdf>=5
+Pillow>=10
+lxml>=5

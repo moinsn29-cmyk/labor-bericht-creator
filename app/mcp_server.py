@@ -1,25 +1,32 @@
 """MCP server for the Laborbericht generator (optional; the skill works without it).
 
-Start with LibreOffice's Python:
+Start with LibreOffice's Python (locked-down mode):
     "C:\\Program Files\\LibreOffice\\program\\python.exe" app\\mcp_server.py
+or, in normal mode, with a Python that has requirements-mcp.txt installed.
 """
 
 from __future__ import annotations
 
 import sys
+import importlib.util
 from pathlib import Path
 
 APP = Path(__file__).resolve().parent
-for path in (APP / "mcp_libs", APP / "mcp_libs" / "win32", APP / "mcp_libs" / "win32" / "lib", APP / "libs", APP):
-    if path.exists():
-        sys.path.insert(0, str(path))
+if importlib.util.find_spec("mcp") is None:
+    # Locked-down mode: LibreOffice's Python has no mcp package, use the bundled Windows copies.
+    # app/libs is needed here already (typing_extensions); headless_core decides the same way
+    # for its own libraries.
+    for path in (APP / "mcp_libs", APP / "mcp_libs" / "win32", APP / "mcp_libs" / "win32" / "lib", APP / "libs"):
+        if path.exists():
+            sys.path.insert(0, str(path))
+sys.path.insert(0, str(APP))
 
 from mcp.server.fastmcp import FastMCP
 
 from headless_core import (
     build_report,
     default_template,
-    documents_folder,
+    environment,
     export_with_libreoffice,
     extract_pdf,
     list_assets,
@@ -35,8 +42,8 @@ mcp = FastMCP(
 
 @mcp.tool()
 def get_status() -> dict:
-    """Return the Python in use and the Documents folder where reports are written."""
-    return {"status": "ready", "python": sys.executable, "documents": documents_folder()}
+    """Return the mode, the Python in use, LibreOffice and the Documents folder for reports."""
+    return {"status": "ready", **environment()}
 
 
 @mcp.tool()

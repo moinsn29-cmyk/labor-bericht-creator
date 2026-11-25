@@ -4,9 +4,9 @@ Aus deinen Screenshots, der Aufgabenstellung und der Word-Vorlage wird ein ferti
 
 ## Was du brauchst
 
-- **Windows** mit **LibreOffice** (auf den Schulrechnern installiert, sonst gratis unter libreoffice.org)
+- **LibreOffice** (auf den Schulrechnern installiert, sonst gratis unter libreoffice.org). Läuft unter Windows, Linux und macOS.
 - **Claude Code** (oder einen anderen KI-Coding-Agenten, der Dateien lesen und Befehle ausführen kann)
-- Python musst du **nicht** installieren: Das Programm läuft mit dem Python, das bei LibreOffice dabei ist. Alles andere liegt in `app/libs`.
+- Python musst du **nicht** installieren: Auf Rechnern ohne Python (Schulrechner) läuft das Programm mit dem Python, das bei LibreOffice dabei ist; alles andere liegt in `app/libs`. Hast du ein eigenes Python, wird das verwendet (siehe „Zwei Betriebsarten").
 - **Deine eigenen Dateien:** die Aufgabenstellung (PDF), die Word-Vorlage deiner Schule (DOCX) und deine Screenshots. Das Repository enthält keine Vorlage und keine Beispielberichte.
 
 ## So gehts
@@ -29,9 +29,16 @@ Aus deinen Screenshots, der Aufgabenstellung und der Word-Vorlage wird ein ferti
 - Ist eine Datei in `final\` noch in Word oder im PDF-Viewer geöffnet, kann sie nicht ersetzt werden. Schließen und den Agenten weitermachen lassen.
 - Die Vorlage muss die Schulvorlage `Vorlage_Laborbericht_PG_V2` sein (oder ihr sehr ähnlich). Bei einer anderen Vorlage sagt dir der Agent, was fehlt.
 
+## Zwei Betriebsarten
+
+Der Agent erkennt selbst, welche passt. Der Bericht sieht in beiden gleich aus.
+
+- **Normal** (eigener Rechner mit Python 3, auch Linux und macOS): `python3 app/check_env.py --setup` legt einmalig den Ordner `.venv` an und installiert dort die Pakete aus `requirements.txt`. Systemweit wird nichts installiert. Unter Debian/Ubuntu braucht LibreOffice zusätzlich das Paket `python3-uno`.
+- **Gesperrt** (Schulrechner ohne Python, pip und Adminrechte): Es läuft alles mit dem Python von LibreOffice und den mitgelieferten Bibliotheken in `app/libs`. Es wird nichts installiert.
+
 ## MCP-Server (optional)
 
-`app\mcp_server.py` stellt den Generator als MCP-Werkzeuge bereit (Bericht bauen, prüfen, Dateien auflisten). Claude Code bietet ihn über `.mcp.json` beim Start im Ordner an. Für den normalen Ablauf über den Agenten ist er nicht nötig.
+`app\mcp_server.py` stellt den Generator als MCP-Werkzeuge bereit (Bericht bauen, prüfen, Dateien auflisten). Claude Code bietet ihn über `.mcp.json` beim Start im Ordner an. Für den normalen Ablauf über den Agenten ist er nicht nötig. `.mcp.json` ist für die Schulrechner eingestellt (LibreOffice-Python unter Windows); auf einem eigenen Rechner `requirements-mcp.txt` in `.venv` installieren und in `.mcp.json` das Python aus `.venv` eintragen.
 
 ## Lizenz
 
@@ -53,3 +60,11 @@ Willst du etwas ändern, sag es dem Agenten („In Abschnitt 3.4 hab ich eigentl
 ```powershell
 & "C:\Program Files\LibreOffice\program\python.exe" app\headless_core.py "C:\…\Dokumente\<Titel>_<Datum>"
 ```
+
+Mit eigenem Python (normale Betriebsart):
+
+```
+.venv/bin/python app/headless_core.py "<Berichtsordner>"
+```
+
+Unter Windows heißt das Python `.venv\Scripts\python.exe`.

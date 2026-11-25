@@ -12,15 +12,34 @@ All paths below are relative to the bundle folder (the folder that contains this
 
 ## 0. Check the environment (once per session)
 
+The generator runs in two modes and the report comes out the same in both. Find out which one applies; do not ask the user.
+
+**Normal mode** — the machine has its own Python 3 (`python3 --version` or `python --version` works; any Linux or macOS machine, a private Windows PC):
+
+```
+python3 app/check_env.py
+```
+
+It prints `MODE=normal`, `PYTHON=…` (the interpreter to build with, normally the bundle's `.venv`), `DOCUMENTS=…`, `SOFFICE=…` and `UNO_PYTHON=…`. Remember `PYTHON` and `DOCUMENTS`.
+
+- `IMPORTS=FEHLER`: the packages are not installed yet. Run `python3 app/check_env.py --setup` once; it creates `.venv` in the bundle folder and installs `requirements.txt` there. Nothing is installed system-wide.
+- `SOFFICE_FOUND=False`: LibreOffice is required in both modes (it refreshes the indexes and writes the PDF). Tell the user to install it (or set `LIBREOFFICE_PROGRAM`) and stop.
+- `UNO_PYTHON=NICHT GEFUNDEN`: LibreOffice's Python bridge is missing. On Debian/Ubuntu the user installs the package `python3-uno`; otherwise set `LIBREOFFICE_PYTHON` to LibreOffice's own Python.
+- If the setup cannot work (no internet, pip blocked, no rights), use the locked-down mode.
+
+**Locked-down mode** — no Python, no pip, no admin rights (the school machines):
+
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File app\check_env.ps1
 ```
 
-It prints `DOCUMENTS=…` (the user's Documents folder, which may be a OneDrive folder), `LIBREOFFICE_PYTHON=…` and `IMPORTS=OK`. Remember both paths.
+It prints `LIBREOFFICE_PYTHON=…` (the interpreter to build with), `MODE=locked-down`, `DOCUMENTS=…` (which may be a OneDrive folder) and `IMPORTS=OK`. Remember both paths.
 
 - `LIBREOFFICE_PYTHON=NICHT GEFUNDEN`: LibreOffice is required. Tell the user to install it (or set `LIBREOFFICE_PROGRAM`) and stop.
 - If PowerShell scripts are blocked, run the same test directly: `& "C:\Program Files\LibreOffice\program\python.exe" -c "import sys; sys.path.insert(0, 'app'); import headless_core as h; print(h.documents_folder())"`. School machines run PowerShell in Constrained Language Mode, so never use `[Environment]::…` or other .NET calls in PowerShell.
-- Only LibreOffice's own Python works: it brings the UNO bridge for the PDF export, and `app/libs` provides python-docx, pypdf and Pillow. Do not install anything, do not use pip, do not use another Python.
+- In this mode only LibreOffice's own Python works: it brings the UNO bridge for the PDF export, and `app/libs` provides python-docx, pypdf and Pillow. Do not install anything, do not use pip, do not use another Python.
+
+Below, `<PYTHON>` is the interpreter the check printed (`PYTHON=` in normal mode, `LIBREOFFICE_PYTHON=` in locked-down mode). Paths are written the Windows way; on Linux and macOS use `/`.
 
 ## 1. Gather what you need
 
@@ -61,7 +80,7 @@ Screenshot names must contain date and time as the Windows Snipping Tool writes 
 ### Report folder
 
 - Lab date: from the screenshot names. If they span several days, ask which day counts.
-- Folder: `<DOCUMENTS>\<Titel>_<YYYY-MM-DD>`, with the exercise title from the sheet, spaces replaced by `_`, and characters invalid in Windows file names removed. Example: `…\Documents\Raspberry_Pi_einrichten_2026-11-23`.
+- Folder: `<DOCUMENTS>\<Titel>_<YYYY-MM-DD>`, with the exercise title from the sheet, spaces replaced by `_`, and characters invalid in Windows file names removed (on every system, so the folder can be moved to a school machine). Example: `…\Documents\Raspberry_Pi_einrichten_2026-11-23`.
 - If the folder already exists, ask whether to continue with it or to start over.
 - Create `screenshots\`, `work\` and `final\`. **Copy** (never move) the screenshots into `screenshots\` without renaming them, and the Aufgabenstellung and the Vorlage into `work\`.
 
@@ -74,7 +93,7 @@ Screenshot names must contain date and time as the Windows Snipping Tool writes 
 
 ## 2. Read the Aufgabenstellung completely
 
-Read the PDF with the Read tool **without** the `pages` parameter (page ranges fail when pdftoppm is missing). Write down, before anything else:
+Read the PDF with the Read tool **without** the `pages` parameter (page ranges fail when pdftoppm is missing, as on the school machines). Write down, before anything else:
 
 - every numbered step of the Übungsanweisung, in order,
 - every explicit question or documentation duty ("Dokumentieren Sie", "Notieren Sie", "Aufgabe:", "Erklären Sie"),
@@ -134,10 +153,12 @@ Fields:
 ## 6. Build
 
 ```powershell
-& "<LIBREOFFICE_PYTHON>" app\headless_core.py "<report folder>"
+& "<PYTHON>" app\headless_core.py "<report folder>"
 ```
 
-It prints `passed`, `pages`, `final` and `failed_checks`; details are in `work\report.json`. A build takes about a minute. Fix every failed check in `content.json` and rebuild. Never change `headless_core.py` to get a pass.
+(Linux/macOS: `"<PYTHON>" app/headless_core.py "<report folder>"`.)
+
+It prints `passed`, `pages`, `final` and `failed_checks`; details are in `work\report.json`. A build takes from a few seconds up to about a minute on a slow machine. Fix every failed check in `content.json` and rebuild. Never change `headless_core.py` to get a pass.
 
 The PDF is rendered in `work\` and then copied with the DOCX to `final\`. If a file in `final\` is open in Word or a PDF viewer, Windows blocks the copy: the only failed check is `final_files_written` and the new PDF stays in `work\_build.pdf`. Review `_build.pdf`, and before finishing ask the user to close the file and build again.
 
