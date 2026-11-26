@@ -54,3 +54,4 @@ Keep both modes working when changing code: `app/libs` is Python 3.11 on Windows
 - Times in headings come only from screenshot file names. No estimated or made-up times.
 - Never edit the generated DOCX or PDF by hand, and never weaken a check in `headless_core.py` to make a build pass.
 - The student hands the report in under their own name with an Eidesstattliche Erklärung. Tell them to read it before handing it in.
+- If a rule here conflicts with an explicit request, tell the user what the rule says and why. If they then insist, it is their decision: comply. Work must stay real (real installs, real runs, real screenshots), and the AI help is listed under "Quellen und verwendete Hilfsmittel" (`ki_hinweis`).
